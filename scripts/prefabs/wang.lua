@@ -83,6 +83,55 @@ local function OnSkillActivated(inst, data)
 end
 
 -- ════════════════════════════════════════════════════════
+-- 升级经验缩放（精英1 / 精英2）
+-- ════════════════════════════════════════════════════════
+-- 前置包把 EXP_CONFIG 写成 ark_elite_replica.lua 的文件内局部表，
+-- 既没有对外暴露，也没有提供覆盖接口。为了不污染前置包（改了会连带影响
+-- 其它角色的成长曲线），这里只在望自己的组件实例上挂钩子。
+--
+-- 挂 GetLevelUpExp 而不是直接改数值的原因：
+--   ① 服务端靠它推进等级（ark_elite.lua 的 _ApplyExpPool）、满级伪升级也读它；
+--   ② 客户端经验条靠它算进度与 "EXP x/y" 文本（ark_exp_bar.lua 的 _GetTotalExp）。
+--   两边都调用同一个方法，钩子一处即可保证服务端结算与客户端显示一致。
+-- 用 next() 先取原始值再缩放，就无需访问那个局部表，前置包更新数值也不用跟着改。
+--
+-- 安装标记挂在实体上，而不是模块级 local：
+-- 模块级标记只对「本次加载的第一个望」有效，之后进服务器的望会因为标记已置位而漏装缩放。
+local function InstallWangExpScale(inst)
+  if inst._wang_exp_scale_installed then
+    return
+  end
+  local replica = inst.replica ~= nil and inst.replica.ark_elite or nil
+  if replica == nil then
+    return
+  end
+  inst._wang_exp_scale_installed = true
+  ArkHookFunction(replica, "GetLevelUpExp", function(next, level)
+    local base = next(level)
+    local scale = TUNING.WANG.LEVEL_EXP_SCALE
+    -- replica.state 由 NetState 提供；取不到就退回原值，不要因为读数失败卡住升级
+    local elite = replica.state ~= nil and replica.state.elite or 1
+    local mult = scale and scale[elite] or 1
+    if mult == 1 then
+      return base
+    end
+    -- 至少留 1 点：缩放后若出现 0 经验，_ApplyExpPool 的升级判定会陷入死循环
+    return math.max(1, math.floor(base * mult))
+  end)
+end
+
+-- 兜底：正常路径在 master_postinit 里装；万一那时 replica 还没注册
+--（AddComponent 内部注册 replica 的时机随引擎版本变化），在组件 PostInit 再装一次。
+-- InstallWangExpScale 自带幂等标记，两条路径都命中也不会重复缩放。
+AddComponentPostInit("ark_elite", function(self)
+  local inst = self.inst
+  if inst == nil or inst.prefab ~= "wang" then
+    return
+  end
+  InstallWangExpScale(inst)
+end)
+
+-- ════════════════════════════════════════════════════════
 -- 特性：阅读书籍（理智消耗随已读次数降低）
 -- ════════════════════════════════════════════════════════
 local function GetReadSanityMultiplier(inst, book)
@@ -251,8 +300,13 @@ local function master_post_init(inst)
   inst.components.ark_elite:SetOnApplyElite(OnWangApplyElite)
   -- 生命上限随成长降低：基础 181，成长满后为 1（框架按累计等级平滑施加负奖励）
   inst.components.ark_elite:SetMaxHealthBonus(TUNING.WANG.MAX_HEALTH_BONUS)
-  -- 关闭击杀经验，改为自定义来源（解锁配方 / 使用技能）
-  inst.components.ark_elite:SetKillExpEnabled(false)
+  -- 开启框架默认击杀经验（= 怪物最大血量 ×5）。
+  -- 望的经验来源因此有三条：掌握配方 / 使用技能 / 击败敌人。
+  -- 击杀经验会随战斗力一起放大（精英化解锁应劫、连星、天下劫，黑子伤害与影响范围同步成长），
+  -- 这是后两阶段唯一不受铸子产量限制的收入来源。
+  inst.components.ark_elite:SetKillExpEnabled(true)
+  -- 望专属的升级经验缩放：只压精英1 / 精英2 两档，精英0 保持原样
+  InstallWangExpScale(inst)
 
   -- 技能（绑定精英化解锁）
   inst:AddComponent("ark_skill")

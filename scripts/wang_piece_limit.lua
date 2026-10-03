@@ -39,6 +39,10 @@ end
 
 function PieceLimit:Register(piece)
   local deployer = piece._deployer
+  -- 保留一份布子者引用：被动引爆（接近陷阱 / 投掷落地）要把击杀记回玩家身上，
+  -- 而 AoEExplode 的伤害来源必须是实体，_deployerUserid 是字符串用不了。
+  -- 只留到本次部署，不写进存档（存档只有 userid），读档后的棋子拿不到主人属预期。
+  piece._attacker = deployer
   piece._deployer = nil
   piece._deployTime = piece._deployTime or GetTime()
   if piece._deployOrder == nil then

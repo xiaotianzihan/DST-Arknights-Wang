@@ -149,7 +149,7 @@ local function PassiveDetonateCheck(inst)
       and dude.components.combat ~= nil and dude.components.combat:CanBeAttacked(inst)
   end, PROX_MUST_TAGS, PROX_NO_TAGS, PROX_ONEOF_TAGS)
   if target ~= nil then
-    inst:PassiveExplode(nil, 1) -- 被动引爆：范围伤害、不摧毁建造物、不记击杀
+    inst:PassiveExplode(nil, 1) -- 接近陷阱引爆：范围伤害、不摧毁建造物、击杀记在布子者身上
   end
 end
 
@@ -665,11 +665,28 @@ local function fn()
 
   -- 被动引爆（boss / 自然灾害等外部摧毁路径触发）：范围伤害，仅单特效，不摧毁建造物
   -- multiplier: 倍率，默认 1（被动引爆无技能加成）
+  -- source: 摧毁者（可为 nil），仍按原样只用于 SuggestTarget 拉仇恨
+  --
+  -- 伤害来源记在布下这枚棋子的玩家（_attacker）身上，而不是棋子自己：
+  -- 引擎 combat.lua 的击杀事件是 attacker:PushEvent("killed", ...)，
+  -- 传 inst（棋子）会让事件落在棋子上，而棋子紧接着就被 Remove —— 这段击杀经验直接丢弃。
+  -- 交给玩家后，接近陷阱自动引爆与投掷落地造成的击杀同样计入望的经验。
+  -- 注意 _attacker 只由部署路径写入、不存档（存档只有 userid）：
+  -- 读档后重新加载的棋子拿不到主人，此时退回棋子自身，即原来的行为。
+  local function ResolveExplodeAttacker(inst)
+    local attacker = inst._attacker
+    if attacker ~= nil and attacker:IsValid() and not attacker:HasTag("playerghost") then
+      return attacker
+    end
+    return inst
+  end
+
   inst.PassiveExplode = function(_, source, multiplier)
     if not inst._isdeployed then return end
     local damage = GetExplodeDamage(inst, multiplier)
     local range = EXPLODE_RANGE * inst._explodeRangeMultiplier
-    AoEExplode(inst, inst, damage, range, false, source)
+    -- 第 6 参 suggest 保持原样传 source：不改变仇恨行为，只把击杀归属交给布子者
+    AoEExplode(inst, ResolveExplodeAttacker(inst), damage, range, false, source)
     SpawnExplodeFx(inst, false, inst._explodeRangeMultiplier)
     Audio.PlaySfx(inst, "piece_passive_explode", 0.65)
     inst:Remove()
